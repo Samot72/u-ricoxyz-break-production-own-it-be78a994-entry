@@ -32,9 +32,13 @@ function isValid(line: string): boolean {
   if (line !== line.trim()) return false; // no leading/trailing whitespace
   for (const ch of line) {
     const code = ch.codePointAt(0)!;
-    if (code < 0x20 || code === 0x7f) return false; // no control chars
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false; // C0/C1/DEL controls
+    if (code >= 0xd800 && code <= 0xdfff) return false; // lone surrogate, not valid UTF-8 text
+    if (code === 0x2028 || code === 0x2029) return false; // line/paragraph separators
     if (ch === "\n" || ch === "\r") return false;
   }
+  // The line must survive a UTF-8 round-trip byte for byte.
+  if (Buffer.from(line, "utf8").toString("utf8") !== line) return false;
   return true;
 }
 
@@ -47,12 +51,25 @@ function main(): void {
   const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, "entry.txt");
+  const expected = Buffer.from(line, "utf8");
+
+  // Determinism self-check: write the line twice to scratch and
+  // require byte-identical output before writing the real entry.
+  const scratchPath = join(outDir, "entry.scratch.txt");
+  writeFileSync(scratchPath, line, "utf8");
+  const first = readFileSync(scratchPath);
+  writeFileSync(scratchPath, line, "utf8");
+  const second = readFileSync(scratchPath);
+  if (!first.equals(expected) || !second.equals(expected) || !first.equals(second)) {
+    throw new Error("determinism check failed: scratch writes are not byte-identical");
+  }
+
   writeFileSync(outPath, line, "utf8");
 
   // Re-read and verify the exact bytes we wrote.
-  const readBack = readFileSync(outPath, "utf8");
-  if (readBack !== line) {
-    throw new Error("verification failed: entry.txt does not match the chosen line");
+  const readBack = readFileSync(outPath);
+  if (!readBack.equals(expected)) {
+    throw new Error("verification failed: entry.txt bytes do not match the chosen line");
   }
   console.log(`entry.txt: ${charCount(line)} characters`);
   console.log(line);
